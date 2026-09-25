@@ -80,7 +80,11 @@ a{color:inherit}
 .rail>.hd b{font-size:13px;letter-spacing:-.01em}
 .rail>.hd .mono{margin-left:auto}
 aside.side>.hd{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink-3)}
-.rail .grp{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink-4);padding:var(--s4) var(--s3) var(--s1)}
+.rail .grp{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink-4);padding:var(--s3) var(--s3);border-left:none;border-top:1px solid var(--line)}
+.rail .grp::before{content:"\25B8";margin-right:2px}
+.rail .grp.open::before{content:"\25BE"}
+.rail .grp.open{color:var(--ink-2)}
+.rail .grp .n{margin-left:auto;font-size:9.5px;color:var(--ink-4)}
 .rail a{display:flex;gap:var(--s2);align-items:center;padding:6px var(--s3);font-size:12.5px;text-decoration:none;border-left:3px solid transparent;cursor:pointer}
 .rail a:hover{background:var(--fill)}
 .rail a[aria-current="true"]{background:var(--fill-2);border-left-color:var(--role);font-weight:600}
@@ -168,6 +172,11 @@ aside.side h4:first-child{margin-top:0}
 .appnav a:focus-visible{outline:none;box-shadow:var(--ring)}
 .appnav a[aria-current="true"]{background:var(--paper);border-left-color:var(--role);color:var(--ink);font-weight:600}
 .appnav a.off{color:var(--ink-4)}
+.apptabs{display:flex;gap:var(--s3);overflow-x:auto;border-bottom:1px solid var(--line);margin:0 0 var(--s3)}
+.apptabs a{font-size:var(--t6);color:var(--ink-3);padding:var(--i4) 0;border-bottom:2px solid transparent;white-space:nowrap;cursor:pointer;text-decoration:none}
+.apptabs a:hover{color:var(--ink)}
+.apptabs a[aria-current="true"]{color:var(--ink);font-weight:600;border-bottom-color:var(--role)}
+.apptabs a.off{color:var(--ink-4);text-decoration:line-through}
 .appnav a.off::after{content:"chiuso";margin-left:auto;font-size:var(--t7);text-transform:uppercase;letter-spacing:.05em;border:1px dashed var(--line-2);padding:0 3px}
 /* pallino sulla voce: quante cose aspettano li' dentro. Su una voce chiusa non esce. */
 .appnav a .bg{margin-left:auto;font-size:var(--t7);font-weight:600;min-width:16px;height:16px;line-height:15px;text-align:center;
@@ -492,7 +501,8 @@ body.solo .rail,body.solo aside.side{display:none}
 @media (max-width:820px){
   .layout{flex-direction:column}
   .rail{width:100%;position:static;height:auto;display:flex;overflow-x:auto;border-right:none;border-bottom:1px solid var(--line-2);padding:0}
-  .rail>.hd,.rail .grp{display:none}
+  .rail>.hd{display:none}
+  .rail .grp{border-top:none;white-space:nowrap}
   .rail a{border-left:none;border-bottom:3px solid transparent;white-space:nowrap}
   .rail a[aria-current="true"]{border-left-color:transparent;border-bottom-color:var(--role)}
   .rail a .t{display:none}
@@ -1073,7 +1083,7 @@ svg.ink path{fill:none;stroke:var(--ko);stroke-width:2.4;stroke-linecap:round;st
 /* MOTORE — non modificare per un singolo progetto. Il contenuto sta in progetti/<nome>/spec.js */
 
 const LVL = {full:'Gestione completa', write:'Usa e modifica', read:'Sola lettura', none:'Nessun accesso'};
-const S = {role:null, screen:null, ann:true, hideOff:false, log:[], flow:null, ux:false, uxSel:null, uxEd:{}, pen:false, pins:{}, pinSel:null, pinFocus:null, txt:false, txtEd:{}, pal:false, drag:null, solo:false, mob:false, menu:false, rmenu:false, saved:null, pb:{}, scr0:null, from:null, opts:false, filtro:'', ff:false, uxAuto:{}, uxAutoRole:{}, pinLast:null, draw:false, inks:{}, arch:false, archC:null, atool:'pan', asel:null, arc:{ink:[], txt:[], x:0, y:0, z:1}};
+const S = {rg:{}, role:null, screen:null, ann:true, hideOff:false, log:[], flow:null, ux:false, uxSel:null, uxEd:{}, pen:false, pins:{}, pinSel:null, pinFocus:null, txt:false, txtEd:{}, pal:false, drag:null, solo:false, mob:false, menu:false, rmenu:false, saved:null, pb:{}, scr0:null, from:null, opts:false, filtro:'', ff:false, uxAuto:{}, uxAutoRole:{}, pinLast:null, draw:false, inks:{}, arch:false, archC:null, atool:'pan', asel:null, arc:{ink:[], txt:[], x:0, y:0, z:1}};
 /* ── helper ───────────────────────────────────────── */
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
@@ -1199,17 +1209,33 @@ function siteFooter(){
 /* ── chrome dell'applicazione ── */
 function appChrome(s, body){
   const r = role();
-  const nav = GROUPS.filter(g => g.id !== 'pub').map(g => {
+  const link = (x, label, cur) => {
+    /* pallino sulla voce: quante cose aspettano li' dentro. Un numero secco, o
+       {ruolo:n} se il conto cambia da ruolo a ruolo. Su una voce chiusa non esce:
+       non si conta quello che non si puo' aprire. */
+    const b = x.badge && typeof x.badge === 'object' ? x.badge[S.role] : x.badge;
+    return '<a data-screen="' + x.id + '" class="' + (lvl(x) === 'none' ? 'off' : '') + '" aria-current="' + cur + '">' + (label || x.label) +
+      (b && lvl(x) !== 'none' ? '<b class="bg">' + b + '</b>' : '') + '</a>';
+  };
+  /* NAV[ruolo] nello spec: la barra condensata di quel ruolo. Una voce e' un id, o
+     {id, label, sub:[id], in:[id]}: le sub diventano tab in cima alla pagina, le in
+     accendono la voce e basta (pagine aperte da un catalogo, non da un tab).
+     Senza NAV, una voce per schermata dai GROUPS. */
+  const custom = typeof NAV !== 'undefined' && NAV[S.role];
+  const items = custom ? [].concat(...custom.map(g => g.items)).map(it => typeof it === 'string' ? {id:it} : it) : [];
+  const here = items.find(o => o.id === s.id || (o.sub || []).includes(s.id) || (o.in || []).includes(s.id));
+  const tabs = here && here.sub && (here.id === s.id || here.sub.includes(s.id))
+    ? '<div class="apptabs">' + [here.id].concat(here.sub).map(scr).filter(Boolean).map((y, i) =>
+        '<a data-screen="' + y.id + '" class="' + (lvl(y) === 'none' ? 'off' : '') + '" aria-current="' + (y.id === s.id) + '">' + (i ? y.label : here.label || y.label) + '</a>').join('') + '</div>'
+    : '';
+  const nav = custom ? custom.map(g => '<div class="grp">' + g.h + '</div>' + g.items.map(it => {
+      const o = typeof it === 'string' ? {id:it} : it;
+      return link(scr(o.id), o.label, !!here && here.id === o.id);
+    }).join('')).join('')
+  : GROUPS.filter(g => g.id !== 'pub').map(g => {
     const items = SCREENS.filter(x => x.g === g.id).filter(x => !(S.hideOff && lvl(x) === 'none'));
     if(!items.length) return '';
-    return '<div class="grp">' + g.name + '</div>' + items.map(x => {
-      /* pallino sulla voce: quante cose aspettano li' dentro. Un numero secco, o
-         {ruolo:n} se il conto cambia da ruolo a ruolo. Su una voce chiusa non esce:
-         non si conta quello che non si puo' aprire. */
-      const b = x.badge && typeof x.badge === 'object' ? x.badge[S.role] : x.badge;
-      return '<a data-screen="' + x.id + '" class="' + (lvl(x) === 'none' ? 'off' : '') + '" aria-current="' + (x.id === s.id) + '">' + x.label +
-        (b && lvl(x) !== 'none' ? '<b class="bg">' + b + '</b>' : '') + '</a>';
-    }).join('');
+    return '<div class="grp">' + g.name + '</div>' + items.map(x => link(x, null, x.id === s.id)).join('');
   }).join('');
   const gname = ((GROUPS.find(g => g.id === s.g) || {}).name) || '';
   const crumb = gname + ' / ' + s.label;
@@ -1219,7 +1245,7 @@ function appChrome(s, body){
       '<span class="icons"><span class="ic">?</span><span class="ic">◎<b>' + ((BRAND.notif && BRAND.notif[S.role]) || 3) + '</b></span>' +
       '<span class="me"><i></i>' + r.name + '</span></span></header>' +
     '<div class="appbody"><nav class="appnav">' + nav + '</nav><div class="appmain">' +
-      '<div class="crumb">' + crumb + '</div>' +
+      '<div class="crumb">' + crumb + '</div>' + tabs +
       '<div class="phead"><div><h1>' + s.title + '</h1><p>' + s.intro + '</p></div>' +
         '<div class="pa">' + (s.pa ? s.pa() : '') + '</div></div>' +
       (s.sub ? '<div class="tabs">' + s.sub.map((x, i) => '<span aria-current="' + (i === 0) + '">' + x + '</span>').join('') + '</div>' : '') +
@@ -2773,11 +2799,14 @@ function render(){
         .filter(x => !(S.hideOff && lvl(x) === 'none'))
         .filter(x => !f || (x.label + ' ' + x.title + ' ' + (x.url || '')).toLowerCase().indexOf(f) >= 0);
       if(!items.length) return '';
-      return '<div class="grp">' + g.name + '</div>' + items.map(x => {
+      /* gruppi a fisarmonica: aperto quello in cui sei (o tutti, se filtri); il
+         titolo apre e chiude, e la scelta resta finche' non la cambi */
+      const open = !!f || (g.id in S.rg ? S.rg[g.id] : g.id === s.g);
+      return '<a class="grp' + (open ? ' open' : '') + '" data-xdo="rg:' + g.id + '">' + g.name + '<span class="n">' + items.length + '</span></a>' + (!open ? '' : items.map(x => {
         const xl = lvl(x);
         return '<a data-screen="' + x.id + '" class="' + (xl === 'none' ? 'off' : '') + '" aria-current="' + (x.id === s.id) + '">' +
           x.label + '<span class="t">' + (S.ux ? uxTag(x) : xl === 'none' ? 'chiuso' : xl === 'read' ? 'lettura' : xl === 'write' ? 'usa' : 'gestisce') + '</span></a>';
-      }).join('');
+      }).join(''));
     }).join('') +
   flowRail() +
   '</nav><div class="canvas"><div class="cv">' + flowBar() + page + '</div></div><aside class="side"><div class="hd">' + modo + '</div>' + sidePanel(s, uxInfo) + '</aside></div>' + dock();
@@ -2880,6 +2909,8 @@ document.addEventListener('click', e => {
     if(v.slice(0, 5) === 'adel:'){ snap('togli appunto'); S.arc.txt.splice(+v.slice(5), 1); render(); return; }
     if(v === 'undo'){ undo(); render(); return; }
     if(v === 'redo'){ redo(); render(); return; }
+    if(v.slice(0, 3) === 'rg:'){ const g = v.slice(3);
+      S.rg[g] = !(g in S.rg ? S.rg[g] : g === scr(S.screen).g); render(); return; }
     if(v === 'flt0'){ S.filtro = ''; S.ff = true; render(); return; }
     if(v.indexOf('m:') === 0){ setMode(v.slice(2)); render(); }
     return;
