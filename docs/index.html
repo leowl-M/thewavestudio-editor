@@ -2539,6 +2539,266 @@ function exportHtml(){
   toast(name + ' \u2014 file unico, si apre offline e parte da questa schermata.');
 }
 
+/* ── FIGMA ───────────────────────────────────────────
+   Ogni schermata aperta a ogni ruolo, desktop e mobile, fotografata dal DOM vero:
+   posizioni, colori, bordi, ombre, testi con i loro stili, icone in SVG. Il plugin
+   in figma/ la rimette in livelli modificabili. Niente auto layout: le posizioni
+   sono quelle del browser, al pixel.
+   ponytail: sfumature ripetute (tratteggi, millimetrata) diventano il loro primo
+   colore pieno; Figma non ha un riempimento che si ripete. */
+const FIGW = {d:1440, m:390};
+const FIGT = [], FIGK = {};
+const fr = v => Math.round(v * 100) / 100;
+function figCol(c){
+  const m = String(c || '').match(/rgba?\(([^)]+)\)/); if(!m) return null;
+  const p = m[1].split(/[\s,\/]+/).filter(Boolean).map(parseFloat);
+  const a = p.length > 3 ? p[3] : 1;
+  return a > 0 ? [fr(p[0] / 255), fr(p[1] / 255), fr(p[2] / 255), fr(a)] : null;
+}
+const figHex = c => { const k = figCol(c); return k ? '#' + k.slice(0, 3).map(v => ('0' + Math.round(v * 255).toString(16)).slice(-2)).join('') : 'none'; };
+function figShadow(v){
+  if(!v || v === 'none') return null;
+  return v.split(/,(?![^(]*\))/).map(s => {
+    const c = figCol(s), n = s.replace(/rgba?\([^)]*\)/, '').match(/-?[\d.]+px/g) || [];
+    return c && [parseFloat(n[0]) || 0, parseFloat(n[1]) || 0, parseFloat(n[2]) || 0, parseFloat(n[3]) || 0, c, /inset/.test(s) ? 1 : 0];
+  }).filter(Boolean);
+}
+/* il riquadro di un elemento: fondo, bordo, angoli, ombra. null se non si vede */
+function figBox(cs, w, h){
+  const o = {};
+  let bg = figCol(cs.backgroundColor);
+  if(!bg && cs.backgroundImage !== 'none') bg = (cs.backgroundImage.match(/rgba?\([^)]+\)/g) || []).map(figCol).filter(Boolean)[0] || null;
+  if(bg) o.bg = bg;
+  const sides = ['Top', 'Right', 'Bottom', 'Left'];
+  const bw = sides.map(k => cs['border' + k + 'Style'] === 'none' ? 0 : parseFloat(cs['border' + k + 'Width']) || 0);
+  if(bw.some(Boolean)){
+    const i = bw.findIndex(Boolean);
+    const c = figCol(cs['border' + sides[i] + 'Color']);
+    if(c) o.bd = {c:c, w:bw, d:{dashed:'a', dotted:'o'}[cs['border' + sides[i] + 'Style']] || 0};
+  }
+  const rad = ['TopLeft', 'TopRight', 'BottomRight', 'BottomLeft'].map(k => {
+    const v = cs['border' + k + 'Radius'];
+    return fr(Math.min(/%/.test(v) ? parseFloat(v) * Math.min(w, h) / 100 : parseFloat(v) || 0, Math.min(w, h) / 2));
+  });
+  if(rad.some(Boolean)) o.rad = rad;
+  const sh = figShadow(cs.boxShadow);
+  if(sh && sh.length) o.sh = sh;
+  return o.bg || o.bd || o.sh ? o : null;
+}
+function figStyle(cs){
+  const z = parseFloat(cs.fontSize) || 14;
+  const s = {f:cs.fontFamily, w:parseInt(cs.fontWeight, 10) || 400, i:/italic|oblique/.test(cs.fontStyle) ? 1 : 0, z:z,
+    c:figCol(cs.color) || [0, 0, 0, 1], lh:fr(cs.lineHeight === 'normal' ? z * 1.2 : parseFloat(cs.lineHeight) || z * 1.2),
+    ls:cs.letterSpacing === 'normal' ? 0 : fr(parseFloat(cs.letterSpacing) || 0),
+    d:/underline/.test(cs.textDecorationLine) ? 'u' : /line-through/.test(cs.textDecorationLine) ? 's' : '',
+    k:{uppercase:'U', lowercase:'L', capitalize:'T'}[cs.textTransform] || ''};
+  const key = JSON.stringify(s);
+  if(!(key in FIGK)){ FIGK[key] = FIGT.length; FIGT.push(s); }
+  return FIGK[key];
+}
+const figHas = cs => figCol(cs.backgroundColor) || cs.backgroundImage !== 'none' || cs.boxShadow !== 'none' ||
+  ['Top', 'Right', 'Bottom', 'Left'].some(k => cs['border' + k + 'Style'] !== 'none' && parseFloat(cs['border' + k + 'Width']));
+/* testo del ::before / ::after, se e' testo in linea: le icone a carattere e i "chiuso" */
+function figPseudo(el, p){
+  const c = getComputedStyle(el, p);
+  if(!/^".*"$/.test(c.content) || c.position === 'absolute' || c.display === 'none') return null;
+  return {t:c.content.slice(1, -1).replace(/\\(.)/g, '$1'), cs:c};
+}
+/* un blocco di solo testo: dentro ha testo, <br> e contenitori in linea senza riquadro */
+function figInline(el){
+  for(const n of el.childNodes){
+    if(n.nodeType !== 1 || n.tagName === 'BR') continue;
+    const c = getComputedStyle(n);
+    if(c.display === 'none') continue;
+    if(c.display !== 'inline' || n.namespaceURI !== el.namespaceURI || /^(IMG|INPUT|SELECT|TEXTAREA|BUTTON|CANVAS)$/.test(n.tagName) || figHas(c) || !figInline(n)) return false;
+  }
+  return true;
+}
+function figRuns(el, o){
+  const cs = getComputedStyle(el), pre = /^pre/.test(cs.whiteSpace), st = figStyle(cs);
+  const add = (t, k) => {
+    if(!pre) t = t.replace(/\s+/g, ' ');
+    if(!pre && (!o.s || /[ \n]$/.test(o.s))) t = t.replace(/^ /, '');
+    if(!t) return;
+    const last = o.r[o.r.length - 1];
+    if(last && last[2] === k && last[1] === o.s.length) last[1] += t.length;
+    else o.r.push([o.s.length, o.s.length + t.length, k]);
+    o.s += t;
+  };
+  const b = figPseudo(el, '::before'); if(b) add(b.t, figStyle(b.cs));
+  for(const n of el.childNodes){
+    if(n.nodeType === 3) add(n.nodeValue, st);
+    else if(n.tagName === 'BR') add('\n', st);
+    else if(n.nodeType === 1 && getComputedStyle(n).display !== 'none') figRuns(n, o);
+  }
+  const a = figPseudo(el, '::after'); if(a) add(a.t, figStyle(a.cs));
+}
+/* un livello di testo messo dove il browser l'ha disegnato. Una riga: larghezza
+   libera, cosi' un font diverso in Figma non va a capo. Piu' righe: la larghezza
+   del blocco, e l'altezza segue. */
+function figText(o, rng, cs, box, ox, oy){
+  o.s = o.s.replace(/[ ]+$/, '');
+  o.r = o.r.filter(r => r[0] < o.s.length).map(r => [r[0], Math.min(r[1], o.s.length), r[2]]);
+  if(!o.s.trim()) return null;
+  const rs = [].filter.call(rng.getClientRects(), r => r.width > 0 && r.height > 0);
+  if(!rs.length) return null;
+  const L = Math.min(...rs.map(r => r.left)), R = Math.max(...rs.map(r => r.right));
+  const T = Math.min(...rs.map(r => r.top)), B = Math.max(...rs.map(r => r.bottom));
+  const lh = FIGT[o.r[0][2]].lh, rows = Math.max(1, Math.round((B - T) / lh));
+  const a = {center:'c', right:'r', end:'r', justify:'j'}[cs.textAlign] || 'l';
+  const n = {t:'x', s:o.s, r:o.r, a:a, y:fr(T - Math.max(0, (lh * rows - (B - T)) / 2) - oy)};
+  if(rows === 1 && o.s.indexOf('\n') < 0){ n.x = fr(L - ox); n.w = fr(R - L); n.au = 'w'; }
+  else if(box){ n.x = fr(box.x - ox); n.w = fr(box.w); n.au = 'h'; }
+  else { n.x = fr(L - ox); n.w = fr(R - L + 1); n.au = 'h'; }
+  n.h = fr(Math.max(B - T, lh * rows));
+  return n;
+}
+function figContent(el, cs, r){
+  const pl = parseFloat(cs.paddingLeft) + parseFloat(cs.borderLeftWidth);
+  const pr = parseFloat(cs.paddingRight) + parseFloat(cs.borderRightWidth);
+  return {x:r.left + pl, w:Math.max(1, r.width - pl - pr)};
+}
+function figSvg(el, r){
+  const c = el.cloneNode(true), a = [el].concat([].slice.call(el.querySelectorAll('*'))), b = [c].concat([].slice.call(c.querySelectorAll('*')));
+  a.forEach((x, i) => {
+    const s = getComputedStyle(x);
+    if(x !== el && !/^(path|line|polyline|polygon|rect|circle|ellipse|text|g|use)$/.test(x.tagName)) return;
+    b[i].setAttribute('fill', figHex(s.fill)); b[i].setAttribute('stroke', figHex(s.stroke));
+    if(s.stroke !== 'none') b[i].setAttribute('stroke-width', parseFloat(s.strokeWidth) || 1);
+    b[i].removeAttribute('class'); b[i].removeAttribute('style');
+  });
+  c.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  c.setAttribute('width', fr(r.width)); c.setAttribute('height', fr(r.height));
+  return c.outerHTML;
+}
+function figCtl(el, cs, r, ox, oy){
+  const box = figBox(cs, r.width, r.height) || {};
+  const f = Object.assign({t:'f', n:el.tagName.toLowerCase(), x:fr(r.left - ox), y:fr(r.top - oy), w:fr(r.width), h:fr(r.height), k:[]}, box);
+  if(el.type === 'checkbox' || el.type === 'radio'){
+    f.bg = [1, 1, 1, 1]; f.bd = {c:[.4, .42, .45, 1], w:[1, 1, 1, 1], d:0};
+    f.rad = el.type === 'radio' ? [r.width / 2, r.width / 2, r.width / 2, r.width / 2] : [3, 3, 3, 3];
+    if(el.checked) f.k.push({t:'f', n:'check', x:fr(r.width * .25), y:fr(r.height * .25), w:fr(r.width * .5), h:fr(r.height * .5),
+      bg:figCol(cs.color) || [0, 0, 0, 1], rad:f.rad.map(v => v / 2), k:[]});
+    return f;
+  }
+  const val = el.tagName === 'SELECT' ? ((el.options[el.selectedIndex] || {}).text || '') : el.value;
+  const txt = val || el.placeholder || '';
+  if(!txt) return f;
+  const cc = val ? cs : getComputedStyle(el, '::placeholder');
+  const st = figStyle(cc), lh = FIGT[st].lh, c = figContent(el, cs, r);
+  const top = el.tagName === 'TEXTAREA' ? parseFloat(cs.paddingTop) + parseFloat(cs.borderTopWidth) : (r.height - lh) / 2;
+  f.k.push({t:'x', s:txt, r:[[0, txt.length, st]], a:'l', x:fr(c.x - r.left), y:fr(top), w:fr(c.w), h:fr(lh), au:el.tagName === 'TEXTAREA' ? 'h' : 'w'});
+  return f;
+}
+/* i riquadri dei ::before/::after posizionati: pallini, velature, la X dei segnaposto */
+function figPseudoBox(el, r, out){
+  ['::before', '::after'].forEach(p => {
+    const c = getComputedStyle(el, p);
+    if(c.content === 'none' || c.position !== 'absolute' || c.display === 'none') return;
+    const w = parseFloat(c.width), h = parseFloat(c.height);
+    if(!(w > 0 && h > 0)) return;
+    const ec = getComputedStyle(el), bl = parseFloat(ec.borderLeftWidth), bt = parseFloat(ec.borderTopWidth);
+    const x = c.left !== 'auto' ? parseFloat(c.left) + bl : r.width - parseFloat(ec.borderRightWidth) - parseFloat(c.right) - w;
+    const y = c.top !== 'auto' ? parseFloat(c.top) + bt : r.height - parseFloat(ec.borderBottomWidth) - parseFloat(c.bottom) - h;
+    if(isNaN(x) || isNaN(y)) return;
+    const d = c.backgroundImage.match(/linear-gradient\(to (?:right )?(top|bottom)(?: right)?,/);
+    if(d){
+      const col = figHex((c.backgroundImage.match(/rgba?\([^)]+\)/g) || []).find(figCol));
+      out.push({t:'s', n:'x', x:fr(x), y:fr(y), w:fr(w), h:fr(h), svg:'<svg xmlns="http://www.w3.org/2000/svg" width="' + fr(w) + '" height="' + fr(h) + '"><line x1="0" y1="' +
+        (d[1] === 'top' ? fr(h) : 0) + '" x2="' + fr(w) + '" y2="' + (d[1] === 'top' ? 0 : fr(h)) + '" stroke="' + col + '" stroke-width="1"/></svg>'});
+      return;
+    }
+    const box = figBox(c, w, h), t = /^".+"$/.test(c.content) ? c.content.slice(1, -1).replace(/\\(.)/g, '$1') : '';
+    const st = t && figStyle(c), lh = t && FIGT[st].lh;
+    const k = t ? [{t:'x', s:t, r:[[0, t.length, st]], a:'c', x:0, y:fr((h - lh) / 2), w:fr(w), h:fr(lh), au:'h'}] : [];
+    if(box || t) out.push(Object.assign({t:'f', n:p.slice(2), x:fr(x), y:fr(y), w:fr(w), h:fr(h), k:k}, box || {}));
+  });
+}
+function figName(el){
+  const c = typeof el.className === 'string' ? el.className.trim().replace(/\s+/g, ' ') : '';
+  return c || el.tagName.toLowerCase();
+}
+/* un elemento diventa una cornice se si vede (fondo, bordo, ombra), se taglia o se
+   raccoglie piu' pezzi; altrimenti lascia i figli al genitore, e i livelli restano pochi */
+function figEl(el, ox, oy){
+  if(el.nodeType !== 1 || /^(SCRIPT|STYLE|TEMPLATE)$/.test(el.tagName) || el.matches('.pinl,.ink')) return [];
+  const cs = getComputedStyle(el);
+  if(cs.display === 'none' || cs.visibility === 'hidden' || +cs.opacity === 0) return [];
+  const r = el.getBoundingClientRect();
+  const x = fr(r.left - ox), y = fr(r.top - oy);
+  if(el.tagName.toLowerCase() === 'svg') return r.width && r.height ? [{t:'s', n:'icona', x:x, y:y, w:fr(r.width), h:fr(r.height), svg:figSvg(el, r)}] : [];
+  if(/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) return [figCtl(el, cs, r, ox, oy)];
+  if(/^(IMG|CANVAS|VIDEO|IFRAME)$/.test(el.tagName))
+    return [Object.assign({t:'f', n:el.tagName.toLowerCase(), x:x, y:y, w:fr(r.width), h:fr(r.height), k:[]}, figBox(cs, r.width, r.height) || {bg:[.92, .92, .91, 1]})];
+  const box = figBox(cs, r.width, r.height), k = [];
+  figPseudoBox(el, r, k);
+  const rng = document.createRange();
+  if(figInline(el)){
+    const o = {s:'', r:[]};
+    figRuns(el, o);
+    rng.selectNodeContents(el);
+    const t = figText(o, rng, cs, cs.display === 'inline' ? null : figContent(el, cs, r), r.left, r.top);
+    if(t) k.push(t);
+  } else for(const n of el.childNodes){
+    if(n.nodeType === 1){ k.push(...figEl(n, r.left, r.top)); continue; }
+    if(n.nodeType !== 3 || !n.nodeValue.trim()) continue;
+    const o = {s:'', r:[]}, st = figStyle(cs);
+    o.s = /^pre/.test(cs.whiteSpace) ? n.nodeValue : n.nodeValue.replace(/\s+/g, ' ').trim();
+    o.r = [[0, o.s.length, st]];
+    rng.selectNodeContents(n);
+    const t = figText(o, rng, cs, null, r.left, r.top);
+    if(t) k.push(t);
+  }
+  const clip = cs.overflowX !== 'visible' || cs.overflowY !== 'visible', op = +cs.opacity;
+  if(box || clip || op < 1 || k.length > 1)
+    return [Object.assign({t:'f', n:figName(el), x:x, y:y, w:fr(r.width), h:fr(r.height), k:k}, box || {}, clip ? {clip:1} : {}, op < 1 ? {op:fr(op)} : {})];
+  k.forEach(c => { c.x = fr(c.x + x); c.y = fr(c.y + y); });
+  return k;
+}
+function figPage(w){
+  const cv = $('.canvas'); if(cv) cv.scrollTop = 0;
+  const p = $('.page');
+  p.style.width = w + 'px'; p.style.maxWidth = 'none'; p.style.margin = '0';
+  p.querySelectorAll('.txch').forEach(e => e.classList.remove('txch'));
+  const r = p.getBoundingClientRect(), k = [];
+  for(const n of p.childNodes) if(n.nodeType === 1) k.push(...figEl(n, r.left, r.top));
+  return {t:'f', n:'', x:0, y:0, w:w, h:fr(r.height), bg:figCol(getComputedStyle(p).backgroundColor) || [1, 1, 1, 1], clip:1, k:k};
+}
+function exportFigma(){
+  if(typeof Blob === 'undefined'){ toast('Esportazione non disponibile qui.', true); return; }
+  const keys = ['role', 'screen', 'mob', 'ux', 'txt', 'pen', 'draw', 'arch', 'flow', 'solo', 'ck', 'menu', 'uxSel', 'pinSel', 'rmenu', 'opts'];
+  const keep = {}; keys.forEach(k => keep[k] = S[k]);
+  /* via tutto quello che il wireframe mette sopra la pagina: si fotografa la pagina */
+  const off = {ux:false, txt:false, pen:false, draw:false, arch:false, flow:null, solo:true, ck:true, menu:false, uxSel:null, pinSel:null, rmenu:false, opts:false};
+  Object.assign(S, off);
+  FIGT.length = 0; Object.keys(FIGK).forEach(k => delete FIGK[k]);
+  const out = {app:'wireframe-figma', v:1, name:BRAND.name, w:FIGW, roles:[]};
+  let n = 0;
+  try{
+    for(const r of ROLES){
+      S.role = r.id;
+      const list = [];
+      for(const s of SCREENS){
+        if(lvl(s) === 'none') continue;
+        S.screen = s.id;
+        const v = {id:s.id, label:s.label, g:((GROUPS.find(g => g.id === s.g) || {}).name) || s.g, url:s.url || ''};
+        ['d', 'm'].forEach(m => { S.mob = m === 'm'; render(); v[m] = figPage(FIGW[m]); });
+        list.push(v); n++;
+      }
+      out.roles.push({id:r.id, name:r.name, color:r.color, screens:list});
+    }
+  } finally { Object.assign(S, keep); render(); }
+  out.ts = FIGT.slice();
+  const name = slug(BRAND.name) + '-figma.json';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(out)], {type:'application/json'}));
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  log('Esportato per Figma ' + name);
+  toast(name + ' \u2014 ' + n + ' schermate \u00d7 desktop e mobile. Aprilo in Figma con il plugin \u201cWireframe \u2192 Figma\u201d.');
+}
+
 /* chi guarda: il menu di sistema non si puo' disegnare, quindi non lo usiamo */
 function rolePick(r){
   return '<div class="pick' + (S.rmenu ? ' open' : '') + '">' +
@@ -2754,6 +3014,7 @@ function dock(){
           dockBtn('arch', 'architettura', 'Il progetto visto da fuori: mappa della navigazione, chi vede cosa, i flussi (A)', S.arch, '', 'mappa') +
         '</span></span>' +
       '<button data-xdo="export" title="Salva un file unico, apribile offline, che riparte da qui">' + ico('giu') + '<span>condividi</span></button>' +
+      '<button data-xdo="figma" title="Tutte le schermate, desktop e mobile, per ogni ruolo: un file da aprire in Figma con il plugin">' + ico('file') + '<span>figma</span></button>' +
       (typeof SPECSRC === 'string'
         ? '<button data-xdo="spec" title="Scarica lo spec.js aggiornato: testi, sezioni e segni dentro il sorgente">' + ico('file') + '<span>scarica spec</span></button>' : '') +
     '</span></div>';
@@ -2896,6 +3157,7 @@ document.addEventListener('click', e => {
   if(xBtn){
     const v = xBtn.dataset.xdo;
     if(v === 'export'){ exportHtml(); return; }
+    if(v === 'figma'){ exportFigma(); return; }
     if(v === 'spec'){ specWrite(); return; }
     if(v === 'menu'){ S.menu = !S.menu; render(); return; }
     if(v === 'rmenu'){ S.rmenu = !S.rmenu; render(); return; }
